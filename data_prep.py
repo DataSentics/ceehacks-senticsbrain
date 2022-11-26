@@ -68,6 +68,10 @@ display(labsall.where(F.col('Patient') == '10164861')) # single patient?
 
 # COMMAND ----------
 
+! grep -r --include "dg.txt" 'I501' /dbfs/ehh_hack/     #-type f #-exec grep -H "invalidTemplateName" {} \;    grep  /dbfs/ehh_hack/
+
+# COMMAND ----------
+
 ! find /dbfs/ehh_hack/ -type f | grep -v 'dg.txt' | awk -F/ '{print $4}' | sort | uniq | wc -l # count all patients that have at least more than just dg.txt file
 
 # COMMAND ----------
@@ -82,33 +86,45 @@ display(labsall.where(F.col('Patient') == '10164861')) # single patient?
 
 patient_data = (
     spark.read.format("json").load('dbfs:/ehh_hack/*') # read all as json (except ECG files)
-    .withColumn('path', F.input_file_name())
-    .withColumn('id', F.element_at(F.split(F.col('path'), '/'), -2)) # extract patient ID
-    .withColumn('dataset', F.element_at(F.split(F.element_at(F.split(F.col('path'), '/'), -1), '\.'),1)) # extract dataset from the file type 
+      .withColumn('path', F.input_file_name())
+      .withColumn('id', F.element_at(F.split(F.col('path'), '/'), -2)) # extract patient ID
+      .withColumn('dataset', F.element_at(F.split(F.element_at(F.split(F.col('path'), '/'), -1), '\.'),1)) # extract dataset from the file type
+      .cache()
 )
-
-# COMMAND ----------
-
-dg_cleaned = (
-    patient_data
-    .where(F.col('_corrupt_record').isNotNull()) # only corrupted data (dg.txt)
-)
-display(dg_cleaned)
-
-# COMMAND ----------
-
 df_cleaned = (
-    patient_data
+  patient_data
     .withColumn('date', # either date or datetime will be present - combine those columns to get either > cast to date
         F.when(F.col('datetime').isNotNull(), F.to_date(F.col('datetime')))
         .when(F.col('date').isNotNull(), F.to_date(F.col('date'), 'yyyy-MM-dd'))
     ) 
     .where(F.col('_corrupt_record').isNull()) # ignore corrupted data (dg.txt)
+    .drop('_corrupt_record')
 )
 # check that all the corrupted rows were dg > OK
 # display( 
 #     df_cleaned.where((F.col('_corrupt_record').isNotNull()) & (F.col('dataset') != 'dg'))
 # )
+
+# COMMAND ----------
+
+dg_cleaned = (
+    spark.read.format("text").load('dbfs:/ehh_hack/*/dg.txt') # read all as json (except ECG files)
+    .withColumn('path', F.input_file_name())
+    .cache()
+)
+
+# COMMAND ----------
+
+heart_diseases = (
+ dg_cleaned
+    .withColumn('id', F.element_at(F.split(F.col('path'), '/'), -2)) # extract patient ID
+    .withColumn('dataset', F.element_at(F.split(F.element_at(F.split(F.col('path'), '/'), -1), '\.'),1)) # extract dataset from the file type
+    .withColumn('heart_diagnoses', F.array_distinct(F.expr(r"regexp_extract_all(value, '(I[3-4][0-9\.]*|I5[0-2\.]*)', 1)")))
+    .withColumn('heart_disease', F.when(F.size('heart_diagnoses') > 0, 1).otherwise(0))
+#     .where(F.col('heart_disease') == 1)
+    .select('id', 'heart_diagnoses', 'heart_disease')
+)
+# display(heart_diseases.select(F.explode(F.col('heart_diagnoses'))).groupBy('col').count()) #unique heart diseases
 
 # COMMAND ----------
 
@@ -153,9 +169,12 @@ ecg = (
 # COMMAND ----------
 
 # write out dataset
-(
+display(
     df_complete.join(ecg, ['id', 'date'], how='outer')
-    .write.format('delta').mode("overwrite").saveAsTable('ceehacks_patientdata')
+    .join(heart_diseases, ['id'], 'inner')
+#     .count()
+#     .count()
+    .write.format('delta').mode("overwrite").option("overwriteSchema", "True").saveAsTable('ceehacks_patientdata')
 )
 
 # COMMAND ----------
