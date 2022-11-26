@@ -174,4 +174,56 @@ ecg = (
 
 # COMMAND ----------
 
+# MAGIC %md ### ECG sampling
+# MAGIC most of the ECG samples are 15k in length.   
+# MAGIC we select 100 samples of length 1k per from the middle of the dataset
+
+# COMMAND ----------
+
+import random
+
+# COMMAND ----------
+
+ecg = spark.read.table('ceehacks_patientdata').where(F.col('ecg').isNotNull()).select('id', 'ecg')
+
+# COMMAND ----------
+
+SAMPLE_SIZE = 1000 # how long a single sample should be
+N_SAMPLES = 100 # how many samples per one patient we want
+N_MEASUREMENTS_THRESHOLD = 10 # filter out patients with at least this many measurements
+
+ecg = spark.read.table('ceehacks_patientdata').where(F.col('ecg').isNotNull()).select('id', 'ecg')
+
+ecg_filtered = ecg.groupBy('id').count().where(F.col('count') > N_MEASUREMENTS_THRESHOLD).join(ecg, ['id'], how='left')
+
+# mean_length = round(ecg.select(F.size('ecg').alias('ecgsize')).agg(F.avg('ecgsize').alias('ecgmean')).collect()[0].ecgmean) # mean length of all ecg measurements (most of them 15k)
+max_length = 15000 # max length of all ecg measurements (most of them  15k)
+interval_start = round(max_length * 0.4) # we want to select samples from the middle of the interval
+interval_end = round(max_length * 0.6) - SAMPLE_SIZE
+
+random.seed(42)
+starting_indices = [random.randint(interval_start, interval_end) for x in range(N_SAMPLES)]
+
+(
+    ecg_filtered
+    .select('id', (F.array_repeat(F.col('ecg'), N_SAMPLES).alias('ecg_multiplied')))
+    .withColumn('sample_size', F.lit(SAMPLE_SIZE))
+    .withColumn('starting_indices', F.array([F.lit(s) for s in starting_indices])) # multiply array in a single 
+    .withColumn("n", F.arrays_zip("ecg_multiplied", "starting_indices")) # zip arrays 
+    .withColumn("n", F.explode("n")) # and explode them together
+    .select('id', F.slice('n.ecg_multiplied', F.col('n.starting_indices'), F.col('sample_size')).alias('slice')) # slice(col,start,length)
+    .write.format('delta').mode("overwrite").saveAsTable('ceehacks_ecg_samples')
+)
+
+# COMMAND ----------
+
+# MAGIC %sql SELECT count(distinct(`id`)) as patients_count
+# MAGIC FROM ceehacks_ecg_samples
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
 
