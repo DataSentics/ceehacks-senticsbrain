@@ -56,6 +56,10 @@ display(labsall.where(F.col('Patient') == '10164861')) # single patient?
 
 # COMMAND ----------
 
+! ls /dbfs/ehh_hack/ -l 
+
+# COMMAND ----------
+
 ! find /dbfs/ehh_hack/ -name "2021-03-19T02_32_35.674Z.txt"
 
 # COMMAND ----------
@@ -64,7 +68,7 @@ display(labsall.where(F.col('Patient') == '10164861')) # single patient?
 
 # COMMAND ----------
 
-! find 
+! find /dbfs/ehh_hack/ -type f | grep -v 'dg.txt' | awk -F/ '{print $4}' | sort | uniq | wc -l # count all patients that have at least more than just dg.txt file
 
 # COMMAND ----------
 
@@ -76,15 +80,10 @@ display(labsall.where(F.col('Patient') == '10164861')) # single patient?
 
 # COMMAND ----------
 
-spark.read.option("recursiveFileLookup","true").json('dbfs:/ehh_hack/')
-
-# COMMAND ----------
-
 patient_data = (
-    spark.read.format("json").load('dbfs:/ehh_hack/*') # read all as json
+    spark.read.format("json").load('dbfs:/ehh_hack/*') # read all as json (except ECG files)
     .withColumn('path', F.input_file_name())
 )
-# display(steps)
 
 # COMMAND ----------
 
@@ -162,7 +161,7 @@ ecg = (
 
 # COMMAND ----------
 
-# MAGIC %sql SELECT count(distinct(id)) as patients_count FROM ceehacks_patientdata
+# MAGIC %sql SELECT count(distinct(id)) as patients_count FROM ceehacks_patientdata -- should correspond to the bash count above
 
 # COMMAND ----------
 
@@ -219,11 +218,3 @@ starting_indices = [random.randint(interval_start, interval_end) for x in range(
 
 # MAGIC %sql SELECT count(distinct(`id`)) as patients_count
 # MAGIC FROM ceehacks_ecg_samples
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-
