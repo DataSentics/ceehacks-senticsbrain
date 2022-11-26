@@ -16,7 +16,7 @@ from petastorm import TransformSpec
 # COMMAND ----------
 
 BATCH_SIZE = 32
-NUM_EPOCHS = 15
+NUM_EPOCHS = 20
 SHAPE = (1000,)
 TRAINING_SAMPLE_SIZE = 300000
 
@@ -30,7 +30,7 @@ def get_model():
     inputs = tf.keras.layers.Input(shape=SHAPE)
     x = tf.keras.layers.experimental.preprocessing.Rescaling(1 / 255)(inputs)
     x = tf.keras.Sequential([
-    tf.keras.layers.Dense(units=500)
+    tf.keras.layers.Dense(units=500, activation='relu')
     ])(x)
 #     x = tf.keras.layers.Conv2D(64, 3, activation="relu")(x)
 #     x = tf.keras.layers.Conv2D(32, 3, activation="relu")(x)
@@ -152,13 +152,13 @@ plt.show()
 
 # COMMAND ----------
 
-df_test = df_test.toPandas()
+df_test_pandas = df_test.toPandas()
 df_train_pandas = df_train.limit(5000).toPandas()
 
 # COMMAND ----------
 
 rv = []
-for image_batch in np.array_split(df_train_pandas.slice, BATCH_SIZE):
+for image_batch in np.array_split(df_test_pandas.slice, BATCH_SIZE):
     images = np.vstack(image_batch)
     dataset = tf.data.Dataset.from_tensor_slices(images).batch(BATCH_SIZE)
     preds = inference_model.predict(dataset)
@@ -166,7 +166,7 @@ for image_batch in np.array_split(df_train_pandas.slice, BATCH_SIZE):
 
 # COMMAND ----------
 
-df_train_pandas['embeddings'] = rv
+df_test_pandas['embeddings'] = rv
 
 # COMMAND ----------
 
@@ -178,11 +178,11 @@ from sklearn.decomposition import PCA
 
 # COMMAND ----------
 
-df_train_pandas.embeddings
+df_test_pandas.embeddings
 
 # COMMAND ----------
 
-arr = [df_train_pandas.loc[i].embeddings.tolist() for i in range(len(df_train_pandas))]
+arr = [df_test_pandas.loc[i].embeddings.tolist() for i in range(len(df_test_pandas))]
 
 # COMMAND ----------
 
@@ -204,24 +204,36 @@ Y = [t[1] for t in transformed]
 
 # COMMAND ----------
 
-df_train_pandas.groupby('id').count()
+df_test_pandas.groupby('id').count()
 
 # COMMAND ----------
 
-x_n = X[200:300] #+ X[2500:2600]
-y_n = Y[200:300] #+ Y[2500:2600]
+x_n = X[0:10] #+ X[2500:2600]
+y_n = Y[0:10] #+ Y[2500:2600]
 
-x_n_n = X[4000:4100]
-y_n_n = Y[4000:4100]
+x_n_n = X[300:310]
+y_n_n = Y[300:310]
 
-x_n_n_n = X[4800:4900]
-y_n_n_n = Y[4800:4900]
+#x_n_n_n = X[3000:3100]
+#y_n_n_n = Y[3000:3100]
+
+# COMMAND ----------
+
+plt.plot(df_test_pandas.iloc[4].slice)
+
+# COMMAND ----------
+
+plt.plot(df_test_pandas.iloc[300].slice)
 
 # COMMAND ----------
 
 plt.scatter(x_n, y_n)
-plt.scatter(x_n_n, y_n_n)
-plt.scatter(x_n_n_n, y_n_n_n)
+plt.scatter(x_n_n, y_n_n, color='red')
+#plt.scatter(x_n_n_n, y_n_n_n)
+
+# COMMAND ----------
+
+pca.explained_variance_ratio_
 
 # COMMAND ----------
 
