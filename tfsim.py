@@ -12,13 +12,14 @@ import tensorflow as tf
 import pandas as pd
 from petastorm.spark import SparkDatasetConverter, make_spark_converter
 from petastorm import TransformSpec
+import pyspark.sql.functions as F
 
 # COMMAND ----------
 
 BATCH_SIZE = 32
 NUM_EPOCHS = 20
 SHAPE = (1000,)
-TRAINING_SAMPLE_SIZE = 300000
+TRAINING_SAMPLE_SIZE = 100000
 
 # COMMAND ----------
 
@@ -60,18 +61,34 @@ def get_compiled_model(lr=0.000005, distance = "cosine"):  # @param {type:"numbe
 
 # COMMAND ----------
 
-df = spark.read.table("ceehacks_ecg_samples")
-df_train, df_val, df_test = df.limit(TRAINING_SAMPLE_SIZE).randomSplit([0.8, 0.1, 0.1], seed=42)
+# selecting distict IDs so that in the test2 there are patients that the model has not seen yet
+TRAINTEST_RATIO = 0.9
+TEST2_RATIO = 0.1
+
+df = spark.read.table("ceehacks_ecg_samples").limit(TRAINING_SAMPLE_SIZE) # limit by selected sample size 
+ids_traintest, ids_unseen = df.groupBy('id').count().sort(F.col('count').asc()).select('id').distinct().randomSplit([TRAINTEST_RATIO, TEST2_RATIO], seed=42)
+
+df_traintest = df.join(ids_traintest, on="id", how="inner")
+df_test2 = df.join(ids_unseen, on="id", how="inner")
+
+# whole dataset except test2
+TRAIN_RATIO = 0.8
+VAL_RATIO = 0.1
+TEST1_RATIO = 0.1
+
+df_train, df_val, df_test = df_traintest.randomSplit([TRAIN_RATIO, VAL_RATIO, TEST1_RATIO], seed=42)
 
 spark.conf.set(SparkDatasetConverter.PARENT_CACHE_DIR_URL_CONF, "file:///dbfs/tmp/petastorm/cache")
 
-converter_train = make_spark_converter(df_train)
-converter_val = make_spark_converter(df_val)
-print(f"train: {len(converter_train)}, val: {len(converter_val)}")
+print(f"df_train: {df_train.count()}, df_val: {df_val.count()}, df_test: {df_test.count()}, df_test2: {df_test2.count()} ")
+
+# converter_train = make_spark_converter(df_train)
+# converter_val = make_spark_converter(df_val)
+# print(f"train: {len(converter_train)}, val: {len(converter_val)}")
 
 # COMMAND ----------
 
-df.count()
+TEST1_RATIO
 
 # COMMAND ----------
 
