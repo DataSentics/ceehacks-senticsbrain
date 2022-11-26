@@ -1,4 +1,12 @@
 # Databricks notebook source
+# MAGIC %md # Similarity model EEH Proof of Concept
+
+# COMMAND ----------
+
+# MAGIC %md ## Requirements
+
+# COMMAND ----------
+
 !pip install tensorflow_similarity
 
 # COMMAND ----------
@@ -21,10 +29,14 @@ tfsim.utils.tf_cap_memory()
 
 # COMMAND ----------
 
+# MAGIC %md ## Config
+
+# COMMAND ----------
+
 BATCH_SIZE = 64
 NUM_EPOCHS = 20
-SHAPE = (1000,)
-TRAINING_SAMPLE_SIZE = 25000
+SHAPE = (2000,)
+TRAINING_SAMPLE_SIZE = 150000
 
 # COMMAND ----------
 
@@ -32,17 +44,16 @@ TRAINING_SAMPLE_SIZE = 25000
 
 # COMMAND ----------
 
-df = spark.read.table("ceehacks_ecg_samples_slice_1000_n_samples_500")
+df = spark.read.table("ceehacks_ecg_samples_slice_2000_n_samples_500")
 df_train, df_val, df_test = df.orderBy(F.rand()).limit(TRAINING_SAMPLE_SIZE).randomSplit([0.7, 0.2, 0.1], seed=12)
 
 # COMMAND ----------
 
 df_train_pandas = df_train.toPandas()
-# df_val_pandas = df_val.toPandas()
 
 # COMMAND ----------
 
-# MAGIC %md ## Get model
+# MAGIC %md ## Model definition
 
 # COMMAND ----------
 
@@ -51,7 +62,6 @@ def get_model():
     x = tf.keras.layers.BatchNormalization()(inputs)
     x = tf.keras.layers.Dense(256)(x)
     x = tf.keras.layers.Dense(128)(x)
-    # x = tf.keras.layers.Flatten()(x)
     outputs = tfsim.layers.MetricEmbedding(64)(x)
     return tfsim.models.SimilarityModel(inputs, outputs)
 
@@ -62,17 +72,18 @@ model.summary()
 
 def get_compiled_model(lr=0.00005, distance = "cosine"):  # @param {type:"number"}
     model = get_model()
-    loss = tfsim.losses.MutiSimilarityLoss(distance=distance)
+    loss = tfsim.losses.TripletLoss(distance=distance)
     model.compile(optimizer=tf.keras.optimizers.Adam(lr), loss=loss)
     return model
 
 # COMMAND ----------
 
+# correct sampler to keep the batches consistent
 sampler = tfsim.samplers.MultiShotMemorySampler(df_train_pandas['slice'], df_train_pandas['id'], classes_per_batch=10, examples_per_class_per_batch=4)
 
 # COMMAND ----------
 
-df_train_pandas.groupby('id').count()
+# MAGIC %md ## Train model
 
 # COMMAND ----------
 
@@ -80,7 +91,7 @@ model = get_compiled_model(lr=0.0001)
 with mlflow.start_run(run_name="similarity_model_training") as run:
     hist = model.fit(sampler, 
                      steps_per_epoch=1000,
-                     epochs=20,
+                     epochs=40,
                      verbose=2,)
     mlflow.keras.log_model(
          model,
@@ -90,14 +101,11 @@ with mlflow.start_run(run_name="similarity_model_training") as run:
 
 # COMMAND ----------
 
-plt.plot(hist.history["loss"])
-plt.legend(["loss", "val_loss"])
-# plt.title(f"Loss: {loss.name} - LR: {LR}")
-plt.show()
+# MAGIC %md ## Evaluate model
 
 # COMMAND ----------
 
-# MAGIC %md ## Get embeddings
+# MAGIC %md ### Helper functions
 
 # COMMAND ----------
 
@@ -114,22 +122,19 @@ def append_emebddings_to_df(df, model):
 # COMMAND ----------
 
 df_train_pandas = append_emebddings_to_df(df_train_pandas, model)
-df_test_pandas = append_emebddings_to_df(df_val_pandas, model)
-
-# COMMAND ----------
-
-import umap
 
 # COMMAND ----------
 
 def visualize_pca_for_patients(df, n_patients = 3, n_samples_per_patient = 100):
-    # n_samples_per_patient = 100
+    """
+    Given the df, visualizes the patients cluster using PCA. Returns the df with coordinates from PCA.
+    """
     arr = [df.iloc[i].embeddings.tolist() for i in range(len(df))]
     pca = PCA(n_components=2)
     pca.fit(arr)
     print(f'Pca explained ration is {pca.explained_variance_ratio_}')
     df = df.sort_values('id')
-    df = df.groupby('id').sample(n_samples_per_patient)
+    df = df.groupby('id').sample(frac=1)
     df['pcad'] = df.embeddings.apply(lambda x: pca.transform([x.tolist()])[0])
     df['pca_x'] = df['pcad'].apply(lambda x: x[0])
     df['pca_y'] = df['pcad'].apply(lambda x: x[1])
@@ -147,93 +152,89 @@ def visualize_pca_for_patients(df, n_patients = 3, n_samples_per_patient = 100):
     plt.show()
     return df
 
+# COMMAND ----------
+
+# MAGIC %md ### Patients cluster
 
 # COMMAND ----------
 
 plt.rcParams["figure.figsize"] = (20,13)
-df_pcad = visualize_pca_for_patients(df_train_pandas, n_patients=25, n_samples_per_patient=25)
+df_pcad = visualize_pca_for_patients(df_train_pandas, n_patients=20, n_samples_per_patient=40)
 
 # COMMAND ----------
 
-plt.rcParams["figure.figsize"] = (20,13)
-df_single = df_pcad[df_pcad.id == '16512904']
+plt.rcParams["figure.figsize"] = (13,8)
+
+# COMMAND ----------
+
+# MAGIC %md ### Cluster for one random patient
+
+# COMMAND ----------
+
+df_single = df_pcad[df_pcad.id == '26732096']
 fig, ax = plt.subplots()
 ax.plot(df_single.pca_x, df_single.pca_y, marker='o', linestyle='', ms=5, label=df_single.index)
-for idx, txt in enumerate(df_single.index):
-    ax.annotate(txt, (df_single.loc[txt].pca_x, df_single.loc[txt].pca_y))
+centroid_x = df_single.pca_x.mean()
+centroid_y =  df_single.pca_y.mean()
+ax.plot(centroid_x, centroid_y, marker='o', linestyle='', ms=15, label=df_single.index)
+ax.plot()
 
 # COMMAND ----------
 
-plt.rcParams["figure.figsize"] = (12,8)
+def plot_normal_and_outliers(df, id):
+    """
+    Function looking for outliers based on PCA coordinates and visualize it in a nice way.
+    """
+    def eukleid(x1, x2, y1, y2):
+        return ((x1-x2)**2 + (y1-y2)**2)**(1/2)
+    df_single = df[df['id'] == id]
+    centroid_x = df_single.pca_x.mean()
+    centroid_y = df_single.pca_y.mean()
+    df_single['distance'] = df_single.pcad.apply(lambda x: eukleid(x[0], centroid_x, x[1], centroid_y))
+    df_single = df_single.sort_values('distance')
+    normal = df_single.head(4)
+    fig, axs = plt.subplots(2, 2)
+    axs[0, 0].plot(df_single.iloc[0].slice)
+    axs[0, 0].yaxis.grid(color='gray')
+    axs[0, 0].xaxis.grid(color='gray')
+    axs[0, 1].plot(df_single.iloc[1].slice)
+    axs[0, 1].yaxis.grid(color='gray')
+    axs[0, 1].xaxis.grid(color='gray')
+    axs[1, 0].plot(df_single.iloc[2].slice)
+    axs[1, 0].yaxis.grid(color='gray')
+    axs[1, 0].xaxis.grid(color='gray')
+    axs[1, 1].plot(df_single.iloc[3].slice)
+    axs[1, 1].yaxis.grid(color='gray')
+    axs[1, 1].xaxis.grid(color='gray')
+    fig.suptitle('patient normal ECG')
+    plt.show()
+        
+    mx = df_single.distance.max()
+    m = df_single.distance.mean()
+    m_std = df_single.distance.std()
+    if mx > m + 5*m_std:
+        plt.plot(df_single.iloc[-1].slice, color='red')
+        plt.title('Potential outlier')
+        plt.grid(visible=True)
+        plt.show()
+    else:
+        print('This patient does not have any anomalies.')
+    
+
 
 # COMMAND ----------
 
-plt.plot(df_single.loc[2292].slice)
+plot_normal_and_outliers(df_pcad, '26732096')
 
 # COMMAND ----------
 
-plt.plot(df_single.loc[2259].slice)
+# MAGIC %md ### Plot for the more samples
 
 # COMMAND ----------
 
-new_row =df_single.loc[N, :]
-record = ([0 for i in range(10)]) + list(df_single.loc[N].slice[10:200].tolist() + ([70000 for i in range(300)]) + (df_single.loc[N].slice[500:].tolist()))
-new_row['slice'] = record
-
-# COMMAND ----------
-
-df_appended = df_single.append(new_row).reset_index(drop=True)
-
-# COMMAND ----------
-
-embeds = append_emebddings_to_df(pd.concat([df_appended, df_appended, df_appended, df_appended]).reset_index(), model)
-
-# COMMAND ----------
-
-embeds
-
-# COMMAND ----------
-
-embeds = embeds[-20:]
-
-# COMMAND ----------
-
-embeds
-
-# COMMAND ----------
-
-pcad = visualize_pca_for_patients(embeds, n_patients=1, n_samples_per_patient=20)
-
-# COMMAND ----------
-
-pcad
-
-# COMMAND ----------
-
-df_single = pcad
-fig, ax = plt.subplots()
-ax.plot(df_single.pca_x, df_single.pca_y, marker='o', linestyle='', ms=5, label=df_single.index)
-for idx, txt in enumerate(df_single.index):
-    ax.annotate(txt, (df_single.loc[txt].pca_x, df_single.loc[txt].pca_y))
-plt.rcParams["figure.figsize"] = (20,13)
-plt.show()
-
-# COMMAND ----------
-
-plt.plot(df_single.loc[66].slice)
-
-# COMMAND ----------
-
-plt.rcParams["figure.figsize"] = (10,7)
-plt.plot(df_single.loc[68].slice)
-plt.show()
-plt.plot(df_single.loc[72].slice)
-plt.show()
-plt.plot(df_single.loc[64].slice)
-
-# COMMAND ----------
-
-
+plt.rcParams["figure.figsize"] = (10,5)
+for id in df_pcad.id.unique()[:30]:
+    plot_normal_and_outliers(df_pcad, id)
 
 # COMMAND ----------
 
