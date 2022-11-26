@@ -83,21 +83,28 @@ display(labsall.where(F.col('Patient') == '10164861')) # single patient?
 patient_data = (
     spark.read.format("json").load('dbfs:/ehh_hack/*') # read all as json (except ECG files)
     .withColumn('path', F.input_file_name())
+    .withColumn('id', F.element_at(F.split(F.col('path'), '/'), -2)) # extract patient ID
+    .withColumn('dataset', F.element_at(F.split(F.element_at(F.split(F.col('path'), '/'), -1), '\.'),1)) # extract dataset from the file type 
 )
+
+# COMMAND ----------
+
+dg_cleaned = (
+    patient_data
+    .where(F.col('_corrupt_record').isNotNull()) # only corrupted data (dg.txt)
+)
+display(dg_cleaned)
 
 # COMMAND ----------
 
 df_cleaned = (
     patient_data
-    .withColumn('id', F.element_at(F.split(F.col('path'), '/'), -2)) # extract patient ID
-    .withColumn('dataset', F.element_at(F.split(F.element_at(F.split(F.col('path'), '/'), -1), '\.'),1)) # extract dataset from the file type 
     .withColumn('date', # either date or datetime will be present - combine those columns to get either > cast to date
         F.when(F.col('datetime').isNotNull(), F.to_date(F.col('datetime')))
         .when(F.col('date').isNotNull(), F.to_date(F.col('date'), 'yyyy-MM-dd'))
     ) 
     .where(F.col('_corrupt_record').isNull()) # ignore corrupted data (dg.txt)
 )
-
 # check that all the corrupted rows were dg > OK
 # display( 
 #     df_cleaned.where((F.col('_corrupt_record').isNotNull()) & (F.col('dataset') != 'dg'))
@@ -187,8 +194,13 @@ ecg = spark.read.table('ceehacks_patientdata').where(F.col('ecg').isNotNull()).s
 
 # COMMAND ----------
 
-SAMPLE_SIZE = 1000 # how long a single sample should be
-N_SAMPLES = 100 # how many samples per one patient we want
+# SAMPLE_SIZE = 1000 # how long a single sample should be
+# N_SAMPLES = 100 # how many samples per one patient we want
+
+
+# for SAMPLE_SIZE in [4000]:
+#     for N_SAMPLES in [500]:
+
 N_MEASUREMENTS_THRESHOLD = 10 # filter out patients with at least this many measurements
 
 ecg = spark.read.table('ceehacks_patientdata').where(F.col('ecg').isNotNull()).select('id', 'ecg')
@@ -197,22 +209,26 @@ ecg_filtered = ecg.groupBy('id').count().where(F.col('count') > N_MEASUREMENTS_T
 
 # mean_length = round(ecg.select(F.size('ecg').alias('ecgsize')).agg(F.avg('ecgsize').alias('ecgmean')).collect()[0].ecgmean) # mean length of all ecg measurements (most of them 15k)
 max_length = 15000 # max length of all ecg measurements (most of them  15k)
-interval_start = round(max_length * 0.4) # we want to select samples from the middle of the interval
-interval_end = round(max_length * 0.6) - SAMPLE_SIZE
+interval_start = round(max_length * 0.2) # we want to select samples from the middle of the interval
+interval_end = round(max_length * 0.7) - SAMPLE_SIZE
 
 random.seed(42)
 starting_indices = [random.randint(interval_start, interval_end) for x in range(N_SAMPLES)]
 
 (
     ecg_filtered
-    .select('id', (F.array_repeat(F.col('ecg'), N_SAMPLES).alias('ecg_multiplied')))
-    .withColumn('sample_size', F.lit(SAMPLE_SIZE))
-    .withColumn('starting_indices', F.array([F.lit(s) for s in starting_indices])) # multiply array in a single 
-    .withColumn("n", F.arrays_zip("ecg_multiplied", "starting_indices")) # zip arrays 
-    .withColumn("n", F.explode("n")) # and explode them together
-    .select('id', F.slice('n.ecg_multiplied', F.col('n.starting_indices'), F.col('sample_size')).alias('slice')) # slice(col,start,length)
-    .write.format('delta').mode("overwrite").saveAsTable('ceehacks_ecg_samples')
+      .select('id', (F.array_repeat(F.col('ecg'), N_SAMPLES).alias('ecg_multiplied')))
+      .withColumn('sample_size', F.lit(SAMPLE_SIZE))
+      .withColumn('starting_indices', F.array([F.lit(s) for s in starting_indices])) # multiply array in a single 
+      .withColumn("n", F.arrays_zip("ecg_multiplied", "starting_indices")) # zip arrays 
+      .withColumn("n", F.explode("n")) # and explode them together
+      .select('id', F.slice('n.ecg_multiplied', F.col('n.starting_indices'), F.col('sample_size')).alias('slice')) # slice(col,start,length)
+      .write.format('delta').mode("overwrite").saveAsTable(f'ceehacks_ecg_samples_slice_{SAMPLE_SIZE}_n_samples_{N_SAMPLES}')
 )
+
+# COMMAND ----------
+
+# MAGIC %sql SELECT * FROM ceehacks_ecg_samples_
 
 # COMMAND ----------
 
